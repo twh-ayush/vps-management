@@ -133,12 +133,12 @@ deploy_vps() {
     echo -e "\n${YELLOW}Provisioning $VM_NAME... Please wait.${NC}"
 
     if [ "$TYPE_CHOICE" == "2" ]; then
-        lxc launch images:ubuntu/24.04 "$VM_NAME" --vm \
+        lxc launch ubuntu:24.04 "$VM_NAME" --vm \
             -c limits.cpu="$VM_CPU" \
             -c limits.memory="$VM_RAM" \
             -d root,size="$VM_DISK"
     else
-        lxc launch images:ubuntu/24.04 "$VM_NAME" \
+        lxc launch ubuntu:24.04 "$VM_NAME" \
             -c limits.cpu="$VM_CPU" \
             -c limits.cpu.priority=10 \
             -c limits.cpu.allowance=100% \
