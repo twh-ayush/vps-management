@@ -26,7 +26,7 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-echo -e "\n${CYAN}[1/4] Checking and verifying prerequisites...${NC}"
+echo -e "\n${CYAN}[1/3] Checking and verifying prerequisites...${NC}"
 
 # Check which core tools need installation
 PACKAGES_TO_INSTALL=()
@@ -48,7 +48,7 @@ fi
 # Ensure snapd service is active
 systemctl enable --now snapd >/dev/null 2>&1 || true
 
-echo -e "${CYAN}[2/4] Verifying LXD & hypervisor environment...${NC}"
+echo -e "${CYAN}[2/3] Verifying LXD & hypervisor environment...${NC}"
 if ! command -v lxd &>/dev/null; then
     echo -e "${YELLOW}[*] LXD not detected. Installing via Snap...${NC}"
     snap install lxd --channel=latest/stable
@@ -97,7 +97,7 @@ else
     echo -e "${GREEN}[✓] Network bridge furious-br0 already initialized. Skipping.${NC}"
 fi
 
-echo -e "${CYAN}[3/4] Downloading latest core suite (twh-vps)...${NC}"
+echo -e "${CYAN}[3/3] Downloading latest core suite (twh-vps)...${NC}"
 RAW_URL="https://raw.githubusercontent.com/twh-ayush/vps-management/main/twh-vps"
 
 if curl -fsSL "$RAW_URL" -o /usr/local/bin/twh-vps; then
@@ -108,35 +108,10 @@ else
     exit 1
 fi
 
-echo -e "${CYAN}[4/4] Configuring auto-branding login profile...${NC}"
-cat << 'PROFILE_EOF' > /etc/profile.d/99-twh-autostart.sh
-#!/usr/bin/env bash
-if [[ $- =~ "i" ]]; then
-    clear
-    CPU_VENDOR=$(grep -m 1 'vendor_id' /proc/cpuinfo 2>/dev/null | awk '{print $3}' || echo "Generic")
-    [ "$CPU_VENDOR" == "AuthenticAMD" ] && VENDOR_NAME="AMD Ryzen/EPYC" || VENDOR_NAME="Intel Xeon/Core"
-    HOST_WAN=$(ip route show default 2>/dev/null | awk '{print $5}' | head -n1)
-    HOST_IP=$(ip -4 addr show "$HOST_WAN" 2>/dev/null | grep inet | awk '{print $2}' | cut -d'/' -f1 | head -n1)
+# Clean up any previously written autostart profile files
+rm -f /etc/profile.d/99-twh-autostart.sh 2>/dev/null || true
 
-    echo -e "\e[35m\e[1m====================================================================\e[0m"
-    echo -e "\e[33m\e[1m         ⚡ TWH AYUSH VPS MAKER MANAGEMENT (UNIVERSAL) ⚡          \e[0m"
-    echo -e "\e[36m\e[1m                     Made By TWH AYUSH                              \e[0m"
-    echo -e "\e[32m\e[1m             High-Performance KVM & LXC Node Management             \e[0m"
-    echo -e "\e[35m\e[1m====================================================================\e[0m"
-    echo -e " • CPU Platform : $VENDOR_NAME ($(nproc) Threads)"
-    echo -e " • Host IP      : ${HOST_IP:-N/A}"
-    echo -e " • Active VMs   : $(lxc list -c n --format csv 2>/dev/null | wc -l) Instances"
-    echo -e " • RAM Free     : $(free -h | awk '/^Mem:/ {print $4 "/" $2}')"
-    echo -e "\e[35m\e[1m====================================================================\e[0m"
-    echo -e "\e[36m[i] Launching Twh Ayush VPS Maker Control Panel...\e[0m\n"
-    sleep 1
-
-    if [ -f /usr/local/bin/twh-vps ]; then
-        /usr/local/bin/twh-vps
-    fi
-fi
-PROFILE_EOF
-chmod +x /etc/profile.d/99-twh-autostart.sh
+echo -e "\n${GREEN}${BOLD}[✓] Installation Complete! Launching Control Panel...${NC}\n"
 
 set -e
 
@@ -201,3 +176,4 @@ exec /usr/local/bin/twh-vps
 echo -e "\n${GREEN}${BOLD}[✓] Installation Complete! Launching Control Panel...${NC}\n"
 sleep 1
 exec /usr/local/bin/twh-vps
+
