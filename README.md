@@ -11,4 +11,4 @@ Universal, zero-error VPS & container deployer for AMD Ryzen/EPYC and Intel Xeon
 Run this command as `root` on any fresh Ubuntu/Debian server:
 
 ```bash
-bash <(curl -sL [https://raw.githubusercontent.com/twh-ayush/vps-management/main/run.sh](https://raw.githubusercontent.com/twh-ayush/vps-management/main/run.sh))
+bash <(curl -sL https://raw.githubusercontent.com/twh-ayush/vps-management/main/run.sh)
