@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Twh Ayush VPS Maker & Management Suite (Universal Edition)
+# Twh Ayush VPS Maker & Management Suite (v5.0 Enterprise Multi-OS Edition)
 # Author: Made By TWH AYUSH
 # Repository: twh-ayush/vps-management
-# Supports: AMD Ryzen/EPYC, Intel Xeon/Core, KVM & LXC on any VPS/VDS/Bare-Metal
+# Supports: Ubuntu, Debian, Alpine, AlmaLinux, Rocky Linux (KVM & LXC)
 # ==============================================================================
 set -e
 
@@ -40,13 +40,20 @@ ensure_infrastructure() {
     modprobe vhost_net 2>/dev/null || true
     modprobe tcp_bbr 2>/dev/null || true
 
+    # Enable IPv4 routing & Proxy-ARP
     sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
     sysctl -w net.ipv4.conf.all.proxy_arp=1 >/dev/null 2>&1 || true
     sysctl -w net.ipv4.conf.default.proxy_arp=1 >/dev/null 2>&1 || true
     sysctl -w net.ipv4.conf."$HOST_IFACE".proxy_arp=1 >/dev/null 2>&1 || true
 
+    # Clamping & TX ring optimizations
     iptables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || \
     iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true
+
+    iptables -t mangle -C POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || \
+    iptables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true
+
+    ip link set dev "$HOST_IFACE" txqueuelen 20000 2>/dev/null || true
 
     if ! ip link show "$BRIDGE" &>/dev/null; then
         lxc network create "$BRIDGE" ipv4.address=10.99.0.1/24 ipv4.nat=true ipv6.address=none 2>/dev/null || true
@@ -90,6 +97,42 @@ get_subnet_free_ip() {
     echo ""
 }
 
+select_os_image() {
+    echo -e "\n${PURPLE}${BOLD}Select Operating System Distribution:${NC}"
+    echo " 1) Ubuntu 24.04 LTS (Noble Numbat) [Default]"
+    echo " 2) Ubuntu 22.04 LTS (Jammy Jellyfish)"
+    echo " 3) Ubuntu 20.04 LTS (Focal Fossa)"
+    echo " 4) Debian 13 (Trixie - Testing/Latest)"
+    echo " 5) Debian 12 (Bookworm - Stable)"
+    echo " 6) Debian 11 (Bullseye - Oldstable)"
+    echo " 7) Alpine Linux 3.20 (Ultra Lightweight)"
+    echo " 8) AlmaLinux 9 (RHEL / Enterprise Linux)"
+    echo " 9) Rocky Linux 9 (RHEL / Enterprise Linux)"
+    echo "10) Custom Image (Provide your own remote:image string)"
+    read -p "Select OS [1-10]: " OS_CHOICE
+
+    case "$OS_CHOICE" in
+        1|"") OS_IMG="ubuntu:24.04"; OS_TYPE="debian" ;;
+        2)    OS_IMG="ubuntu:22.04"; OS_TYPE="debian" ;;
+        3)    OS_IMG="ubuntu:20.04"; OS_TYPE="debian" ;;
+        4)    OS_IMG="images:debian/13"; OS_TYPE="debian" ;;
+        5)    OS_IMG="images:debian/12"; OS_TYPE="debian" ;;
+        6)    OS_IMG="images:debian/11"; OS_TYPE="debian" ;;
+        7)    OS_IMG="images:alpine/3.20"; OS_TYPE="alpine" ;;
+        8)    OS_IMG="images:almalinux/9"; OS_TYPE="rhel" ;;
+        9)    OS_IMG="images:rockylinux/9"; OS_TYPE="rhel" ;;
+        10)
+            read -p "Enter image remote string (e.g. images:archlinux): " OS_IMG
+            OS_TYPE="debian"
+            ;;
+        *)
+            echo -e "${YELLOW}Invalid option, defaulting to Ubuntu 24.04 LTS.${NC}"
+            OS_IMG="ubuntu:24.04"
+            OS_TYPE="debian"
+            ;;
+    esac
+}
+
 deploy_vps() {
     echo -e "\n${CYAN}${BOLD}=== 🚀 TWH AYUSH - DEPLOY NEW INSTANCE ===${NC}"
     echo -e "${YELLOW}${BOLD}               Made By TWH AYUSH            ${NC}"
@@ -98,6 +141,8 @@ deploy_vps() {
         echo -e "${RED}Error: Instance '$VM_NAME' already exists!${NC}"
         return
     fi
+
+    select_os_image
 
     echo -e "\nSelect Virtualization Architecture:"
     echo "1) High-Performance LXC Container (0% virtualization overhead, best for Minecraft nodes & Wings)"
@@ -130,15 +175,15 @@ deploy_vps() {
     read -p "Custom CPU Brand String (e.g. AMD Ryzen 9 7950X, or leave blank): " CUSTOM_CPU
     read -p "Custom Branding Title [Default: Twh Ayush Cloud Node]: " BRAND_TITLE; BRAND_TITLE=${BRAND_TITLE:-Twh Ayush Cloud Node}
 
-    echo -e "\n${YELLOW}Provisioning $VM_NAME... Please wait.${NC}"
+    echo -e "\n${YELLOW}Provisioning $VM_NAME ($OS_IMG)... Please wait.${NC}"
 
     if [ "$TYPE_CHOICE" == "2" ]; then
-        lxc launch ubuntu:24.04 "$VM_NAME" --vm \
+        lxc launch "$OS_IMG" "$VM_NAME" --vm \
             -c limits.cpu="$VM_CPU" \
             -c limits.memory="$VM_RAM" \
             -d root,size="$VM_DISK"
     else
-        lxc launch ubuntu:24.04 "$VM_NAME" \
+        lxc launch "$OS_IMG" "$VM_NAME" \
             -c limits.cpu="$VM_CPU" \
             -c limits.cpu.priority=10 \
             -c limits.cpu.allowance=100% \
@@ -173,43 +218,57 @@ deploy_vps() {
 
     sleep 6
 
-    lxc exec "$VM_NAME" -- bash -c "
-        echo 'root:$VM_PASS' | chpasswd
-        chage -M 99999 root
-        apt-get update -y >/dev/null 2>&1 || true
-        apt-get install -y openssh-server curl wget ethtool lsb-release htop >/dev/null 2>&1 || true
-        sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/g' /etc/ssh/sshd_config 2>/dev/null || true
-        sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/g' /etc/ssh/sshd_config 2>/dev/null || true
-        systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
+    # Guest provisioning
+    if [ "$OS_TYPE" == "alpine" ]; then
+        lxc exec "$VM_NAME" -- sh -c "
+            echo 'root:$VM_PASS' | chpasswd
+            apk update
+            apk add openssh curl wget ethtool htop bash
+            sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/g' /etc/ssh/sshd_config
+            rc-update add sshd default 2>/dev/null || true
+            service sshd start 2>/dev/null || /usr/sbin/sshd 2>/dev/null || true
+        "
+    elif [ "$OS_TYPE" == "rhel" ]; then
+        lxc exec "$VM_NAME" -- bash -c "
+            echo 'root:$VM_PASS' | chpasswd
+            chage -M 99999 root
+            dnf install -y openssh-server curl wget ethtool iproute >/dev/null 2>&1 || true
+            sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/g' /etc/ssh/sshd_config 2>/dev/null || true
+            sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/g' /etc/ssh/sshd_config 2>/dev/null || true
+            systemctl restart sshd 2>/dev/null || true
+        "
+    else
+        lxc exec "$VM_NAME" -- bash -c "
+            echo 'root:$VM_PASS' | chpasswd
+            chage -M 99999 root
+            apt-get update -y >/dev/null 2>&1 || true
+            apt-get install -y openssh-server curl wget ethtool lsb-release htop >/dev/null 2>&1 || true
+            sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/g' /etc/ssh/sshd_config 2>/dev/null || true
+            sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/g' /etc/ssh/sshd_config 2>/dev/null || true
+            systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
+        "
+    fi
 
+    # Network optimizations inside guest
+    lxc exec "$VM_NAME" -- bash -c "
         ethtool -K eth0 tx off rx off 2>/dev/null || true
         ip link set dev eth0 txqueuelen 10000 2>/dev/null || true
-
         cat << 'DNS' > /etc/resolv.conf
 nameserver 1.1.1.1
 nameserver 8.8.8.8
 DNS
-
-        cat << 'MOTD' > /etc/update-motd.d/00-twh-header
-#!/bin/sh
-echo \"\e[35m\e[1m====================================================================\e[0m\"
-echo \"\e[33m\e[1m    ⚡ $BRAND_TITLE ⚡\e[0m\"
-echo \"\e[36m\e[1m               Made By TWH AYUSH                                    \e[0m\"
-echo \"\e[32m       Instance: $VM_NAME  |  Status: ACTIVE & OPTIMIZED\e[0m\"
-echo \"\e[35m\e[1m====================================================================\e[0m\"
-echo \" • IP Address : \$(ip -4 addr show scope global | grep inet | awk '{print \$2}' | cut -d'/' -f1 | head -n1)\"
-echo \" • Kernel     : \$(uname -r)\"
-echo \" • System Load: \$(cut -d ' ' -f 1-3 /proc/loadavg)\"
-echo \" • RAM Status : \$(free -m | awk '/Mem:/ { printf(\"%dMB / %dMB\", \$7, \$2) }')\"
-echo \"\e[35m\e[1m--------------------------------------------------------------------\e[0m\"
+        cat << 'MOTD' > /etc/motd
+====================================================================
+    ⚡ $BRAND_TITLE ⚡
+               Made By TWH AYUSH
+       Instance: $VM_NAME ($OS_IMG)
+====================================================================
 MOTD
-        chmod +x /etc/update-motd.d/00-twh-header
-        rm -f /etc/update-motd.d/10-help-text /etc/update-motd.d/50-motd-news /etc/legal 2>/dev/null || true
-    "
+    " 2>/dev/null || true
 
     apply_hyper_boost "$VM_NAME"
 
-    echo -e "\n${GREEN}${BOLD}[✓] INSTANCE $VM_NAME PROVISIONED SUCCESSFULLY!${NC}"
+    echo -e "\n${GREEN}${BOLD}[✓] INSTANCE $VM_NAME ($OS_IMG) PROVISIONED SUCCESSFULLY!${NC}"
     echo -e " • Assigned IP   : ${VM_IP:-$(lxc list "$VM_NAME" -c 4 --csv | awk '{print $1}')}"
     echo -e " • Root Password : $VM_PASS"
     echo -e " • SSH Login     : ssh root@${VM_IP:-$(lxc list "$VM_NAME" -c 4 --csv | awk '{print $1}')}"
@@ -339,7 +398,7 @@ SYS
 root soft nofile 1048576
 root hard nofile 1048576
 LIMS
-    '
+    ' 2>/dev/null || true
     echo -e "${GREEN}[✓] $TARGET is running in Hyper-Boosted mode.${NC}"
 }
 
@@ -383,10 +442,10 @@ change_password_permanent() {
     read -p "Enter New Permanent Root Password: " NEW_PASS
     lxc exec "$VM_NAME" -- bash -c "
         echo 'root:$NEW_PASS' | chpasswd
-        chage -M 99999 root
+        chage -M 99999 root 2>/dev/null || true
         sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/g' /etc/ssh/sshd_config 2>/dev/null || true
         sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/g' /etc/ssh/sshd_config 2>/dev/null || true
-        systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
+        systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || service sshd restart 2>/dev/null || true
     "
     echo -e "${GREEN}[✓] Permanent password updated for $VM_NAME.${NC}"
 }
@@ -406,34 +465,196 @@ change_cpu_name() {
     echo -e "${GREEN}[✓] CPU model name spoofed to '$CPU_STR' on $VM_NAME.${NC}"
 }
 
+install_game_stack() {
+    echo -e "\n${CYAN}${BOLD}=== 🎮 1-CLICK GAME & CLOUD STACK INSTALLER ===${NC}"
+    read -p "Enter Instance Name: " VM_NAME
+    if ! lxc info "$VM_NAME" &>/dev/null; then
+        echo -e "${RED}Error: Instance '$VM_NAME' not found!${NC}"; return
+    fi
+
+    echo "1) Install Docker CE & Pterodactyl Wings Daemon"
+    echo "2) Install Multi-Java Engine (Java 17 & Java 21 OpenJDK)"
+    echo "3) Complete Game Node Setup (Docker + Wings + Java 17/21)"
+    read -p "Select [1-3]: " STACK_OPT
+
+    case "$STACK_OPT" in
+        1)
+            echo -e "${YELLOW}Installing Docker CE & Pterodactyl Wings on $VM_NAME...${NC}"
+            lxc exec "$VM_NAME" -- bash -c "
+                curl -sSL https://get.docker.com/ | CHANNEL=stable bash
+                systemctl enable --now docker
+                mkdir -p /etc/pterodactyl
+                curl -L -o /usr/local/bin/wings https://github.com/pterodactyl/wings/releases/latest/download/wings_linux_amd64
+                chmod u+x /usr/local/bin/wings
+            "
+            echo -e "${GREEN}[✓] Docker & Wings installed! Add your config.yml to /etc/pterodactyl/ on the node.${NC}"
+            ;;
+        2)
+            echo -e "${YELLOW}Installing Java 17 and Java 21 on $VM_NAME...${NC}"
+            lxc exec "$VM_NAME" -- bash -c "
+                apt-get update -y >/dev/null 2>&1 || true
+                apt-get install -y openjdk-17-jdk-headless openjdk-21-jdk-headless >/dev/null 2>&1 || true
+            "
+            echo -e "${GREEN}[✓] Java 17 & 21 installed. Switch anytime using update-alternatives --config java.${NC}"
+            ;;
+        3)
+            echo -e "${YELLOW}Installing complete Game Node stack on $VM_NAME...${NC}"
+            lxc exec "$VM_NAME" -- bash -c "
+                curl -sSL https://get.docker.com/ | CHANNEL=stable bash
+                systemctl enable --now docker
+                mkdir -p /etc/pterodactyl
+                curl -L -o /usr/local/bin/wings https://github.com/pterodactyl/wings/releases/latest/download/wings_linux_amd64
+                chmod u+x /usr/local/bin/wings
+                apt-get update -y >/dev/null 2>&1 || true
+                apt-get install -y openjdk-17-jdk-headless openjdk-21-jdk-headless >/dev/null 2>&1 || true
+            "
+            echo -e "${GREEN}[✓] Complete Game Node stack (Wings, Docker, Java 17/21) ready!${NC}"
+            ;;
+        *) echo -e "${RED}Invalid selection!${NC}" ;;
+    esac
+}
+
+port_forward_nat() {
+    echo -e "\n${CYAN}${BOLD}=== 🌐 INTERACTIVE NAT PORT FORWARDING PROXY ===${NC}"
+    read -p "Enter Target Instance Name: " VM_NAME
+    if ! lxc info "$VM_NAME" &>/dev/null; then
+        echo -e "${RED}Error: Instance '$VM_NAME' not found!${NC}"; return
+    fi
+
+    read -p "Enter Host External Port (e.g. 25565): " HOST_PORT
+    read -p "Enter Instance Internal Port [Default: $HOST_PORT]: " VM_PORT
+    VM_PORT=${VM_PORT:-$HOST_PORT}
+    read -p "Protocol (tcp/udp) [Default: tcp]: " PROTO
+    PROTO=${PROTO:-tcp}
+
+    DEV_NAME="proxy-${PROTO}-${HOST_PORT}"
+    lxc config device add "$VM_NAME" "$DEV_NAME" proxy \
+        listen="${PROTO}:0.0.0.0:${HOST_PORT}" \
+        connect="${PROTO}:127.0.0.1:${VM_PORT}"
+
+    echo -e "${GREEN}[✓] Port mapped successfully!${NC}"
+    echo -e " • Forwarding: ${HOST_PRIMARY_IP}:${HOST_PORT} -> ${VM_NAME}:${VM_PORT} (${PROTO})"
+}
+
+clone_instance() {
+    echo -e "\n${CYAN}${BOLD}=== 📋 INSTANT CONTAINER & VM CLONE FACTORY ===${NC}"
+    read -p "Enter Existing Instance to Clone From: " SRC_NAME
+    if ! lxc info "$SRC_NAME" &>/dev/null; then
+        echo -e "${RED}Error: Source '$SRC_NAME' not found!${NC}"; return
+    fi
+
+    read -p "Enter New Instance Name: " DEST_NAME
+    if lxc info "$DEST_NAME" &>/dev/null; then
+        echo -e "${RED}Error: Instance '$DEST_NAME' already exists!${NC}"; return
+    fi
+
+    echo -e "${YELLOW}Cloning $SRC_NAME to $DEST_NAME...${NC}"
+    lxc copy "$SRC_NAME" "$DEST_NAME"
+    lxc start "$DEST_NAME"
+
+    echo -e "${GREEN}[✓] Successfully cloned and started $DEST_NAME!${NC}"
+}
+
+toggle_suspend() {
+    echo -e "\n${CYAN}${BOLD}=== ⏸️ FREEZE / UNFREEZE (CGROUP SUSPEND ENGINE) ===${NC}"
+    read -p "Enter Instance Name: " VM_NAME
+    if ! lxc info "$VM_NAME" &>/dev/null; then
+        echo -e "${RED}Error: Instance '$VM_NAME' not found!${NC}"; return
+    fi
+
+    CURRENT_STATUS=$(lxc info "$VM_NAME" | grep "Status:" | awk '{print $2}')
+    if [ "$CURRENT_STATUS" == "RUNNING" ]; then
+        lxc pause "$VM_NAME"
+        echo -e "${YELLOW}[✓] Instance $VM_NAME is now FROZEN (Memory state preserved in RAM).${NC}"
+    elif [ "$CURRENT_STATUS" == "FROZEN" ]; then
+        lxc resume "$VM_NAME"
+        echo -e "${GREEN}[✓] Instance $VM_NAME is now RESUMED and running!${NC}"
+    else
+        echo -e "${RED}Instance is $CURRENT_STATUS. It must be RUNNING to freeze or FROZEN to resume.${NC}"
+    fi
+}
+
+toggle_watchdog() {
+    echo -e "\n${CYAN}${BOLD}=== 🛡️ AUTO-WATCHDOG CRASH HEALER DAEMON ===${NC}"
+    echo "1) Install & Enable Background Watchdog Daemon"
+    echo "2) Disable & Remove Watchdog Daemon"
+    read -p "Select [1/2]: " WD_OPT
+
+    if [ "$WD_OPT" == "1" ]; then
+        cat << 'EOF_WD' > /usr/local/bin/twh-watchdog.sh
+#!/usr/bin/env bash
+while true; do
+    for vm in $(lxc list -c n --format csv 2>/dev/null); do
+        AUTOSTART=$(lxc config get "$vm" boot.autostart 2>/dev/null || echo "")
+        STATUS=$(lxc info "$vm" 2>/dev/null | grep "Status:" | awk '{print $2}')
+        if [ "$AUTOSTART" == "true" ] && [ "$STATUS" == "STOPPED" ]; then
+            lxc start "$vm" 2>/dev/null || true
+        fi
+    done
+    sleep 30
+done
+EOF_WD
+        chmod +x /usr/local/bin/twh-watchdog.sh
+
+        cat << 'EOF_UNIT' > /etc/systemd/system/twh-watchdog.service
+[Unit]
+Description=Twh Ayush Instance Crash Auto-Healer Watchdog
+After=snap.lxd.daemon.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/twh-watchdog.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF_UNIT
+
+        systemctl daemon-reload
+        systemctl enable --now twh-watchdog.service
+        echo -e "${GREEN}[✓] Auto-Watchdog active! Any autostart instance that crashes will be revived within 30 seconds.${NC}"
+    elif [ "$WD_OPT" == "2" ]; then
+        systemctl disable --now twh-watchdog.service 2>/dev/null || true
+        rm -f /etc/systemd/system/twh-watchdog.service /usr/local/bin/twh-watchdog.sh
+        systemctl daemon-reload
+        echo -e "${YELLOW}[✓] Watchdog daemon removed.${NC}"
+    fi
+}
+
 ensure_infrastructure
 
 while true; do
     echo -e "\n${CYAN}${BOLD}====================================================${NC}"
-    echo -e "${GREEN}${BOLD}     ⚡ TWH AYUSH VPS MAKER MANAGEMENT ⚡           ${NC}"
+    echo -e "${GREEN}${BOLD}     ⚡ TWH AYUSH VPS MAKER MANAGEMENT (v5.0) ⚡     ${NC}"
     echo -e "${YELLOW}${BOLD}                  Made By TWH AYUSH                 ${NC}"
     echo -e "${CYAN}${BOLD}====================================================${NC}"
-    echo "1) Deploy New Machine (With Auto Free IP Selection)"
-    echo "2) Live Real-Time Resource Monitor (CPU, RAM, IPs)"
-    echo "3) Enter VM Terminal Shell"
-    echo "4) Delete Instance & Permanently Purge Routed IP"
-    echo "5) Change Root Password (Permanent / Never Expires)"
-    echo "6) Live Zero-Downtime Resource Scaler (CPU, RAM, Disk)"
-    echo "7) Instant Snapshots & 1-Click Rollback"
-    echo "8) Hyper-Boost Network & TPS (Individual Instance)"
-    echo "9) Change / Spoof CPU Model Brand"
+    echo " 1) Deploy New Machine (Ubuntu/Debian/Alpine/Alma/Rocky)"
+    echo " 2) Live Real-Time Resource Monitor (CPU, RAM, IPs)"
+    echo " 3) Enter VM Terminal Shell"
+    echo " 4) Delete Instance & Permanently Purge Routed IP"
+    echo " 5) Change Root Password (Permanent / Never Expires)"
+    echo " 6) Live Zero-Downtime Resource Scaler (CPU, RAM, Disk)"
+    echo " 7) Instant Snapshots & 1-Click Rollback"
+    echo " 8) Hyper-Boost Network & TPS (Individual Instance)"
+    echo " 9) Change / Spoof CPU Model Brand"
     echo "10) Restart Instance"
     echo "11) Emergency Host Memory Cache Purge"
-    echo "12) Exit"
+    echo "12) 1-Click Game Stack (Docker, Wings, Java 17/21)"
+    echo "13) Interactive NAT Port Forwarding Proxy"
+    echo "14) Clone Container / VM Instant Factory"
+    echo "15) Freeze / Unfreeze Instance (cgroup pause)"
+    echo "16) Anti-Crash Auto-Healer Watchdog Daemon"
+    echo "17) Exit"
     echo -e "${CYAN}----------------------------------------------------${NC}"
-    read -p "Select Option [1-12]: " OPTION
+    read -p "Select Option [1-17]: " OPTION
 
     case "$OPTION" in
         1) deploy_vps ;;
         2) live_monitor ;;
         3) 
            read -p "Instance Name: " VNAME
-           lxc exec "$VNAME" -- bash 
+           lxc exec "$VNAME" -- bash || lxc exec "$VNAME" -- sh
            ;;
         4) delete_instance_with_ip ;;
         5) change_password_permanent ;;
@@ -453,7 +674,12 @@ while true; do
            sync && echo 3 > /proc/sys/vm/drop_caches
            echo -e "${GREEN}[✓] Host RAM buffer caches cleared!${NC}"
            ;;
-        12) echo "Exiting."; exit 0 ;;
+        12) install_game_stack ;;
+        13) port_forward_nat ;;
+        14) clone_instance ;;
+        15) toggle_suspend ;;
+        16) toggle_watchdog ;;
+        17) echo "Exiting."; exit 0 ;;
         *) echo -e "${RED}Invalid selection!${NC}" ;;
     esac
 done
